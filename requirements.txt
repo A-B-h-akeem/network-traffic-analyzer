@@ -1,0 +1,4 @@
+scapy>=2.6
+pandas>=2.2
+streamlit>=1.67
+pytest>=8

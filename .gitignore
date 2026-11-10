@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+capture.pcap
+monitor.pcap
+report.json
+
+# Local tooling and build output
+.claude/
+.project-memory/
+*.zip
