@@ -15,6 +15,8 @@ the analyzer anywhere:
 from __future__ import annotations
 
 import random
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from scapy.layers.dns import DNS, DNSQR, DNSRR
@@ -42,16 +44,32 @@ INTERNET = {
 BROADCAST = "ff:ff:ff:ff:ff:ff"
 
 
+@dataclass(frozen=True)
+class Event:
+    """An injected event, as ground truth for evaluating the detectors."""
+    kind: str     # the alert kind that should report it
+    start: float  # epoch seconds of its first packet
+    end: float    # epoch seconds of its last packet
+
+
 class _Trace:
     """Collects packets with timestamps, then writes them in time order."""
 
     def __init__(self, seed: int):
         self.rng = random.Random(seed)
         self.packets: list[Packet] = []
+        self.events: list[Event] = []
 
     def add(self, t: float, pkt: Packet) -> None:
         pkt.time = START + t
         self.packets.append(pkt)
+
+    def inject(self, kind: str, fn: Callable[..., object], **kwargs) -> None:
+        """Run one event generator and record when its packets start and end."""
+        first = len(self.packets)
+        fn(self, **kwargs)
+        times = [float(p.time) for p in self.packets[first:]]
+        self.events.append(Event(kind, min(times), max(times)))
 
     def write(self, path: Path) -> None:
         self.packets.sort(key=lambda p: p.time)
@@ -253,21 +271,30 @@ def _dns_tunnel(tr: _Trace, start: float, queries: int = 200, seconds: float = 4
 SCENARIOS = ("demo", "normal", "advanced")
 
 
-def generate(path: str | Path, scenario: str = "demo", seed: int = 7) -> Path:
+def _build(scenario: str, seed: int) -> _Trace:
     if scenario not in SCENARIOS:
         raise ValueError(f"scenario must be one of {SCENARIOS}")
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
     tr = _Trace(seed)
     _baseline(tr)
     if scenario == "demo":
-        _port_scan(tr, start=10)
-        _arp_spoof(tr, start=18, end=DURATION)
-        _bulk_download(tr, start=26)
-        _syn_flood(tr, start=40)
-        _icmp_flood(tr, start=50)
+        tr.inject("Port scan", _port_scan, start=10)
+        tr.inject("ARP spoofing", _arp_spoof, start=18, end=DURATION)
+        tr.inject("Link saturation", _bulk_download, start=26)
+        tr.inject("SYN flood", _syn_flood, start=40)
+        tr.inject("ICMP flood", _icmp_flood, start=50)
     elif scenario == "advanced":
-        _ssh_brute_force(tr, start=8)
-        _dns_tunnel(tr, start=15)
-    tr.write(path)
+        tr.inject("Brute-force login", _ssh_brute_force, start=8)
+        tr.inject("DNS tunnelling", _dns_tunnel, start=15)
+    return tr
+
+
+def generate(path: str | Path, scenario: str = "demo", seed: int = 7) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _build(scenario, seed).write(path)
     return path
+
+
+def ground_truth(scenario: str, seed: int = 7) -> list[Event]:
+    """The events injected into a scenario's capture (rebuilt, not read back)."""
+    return _build(scenario, seed).events

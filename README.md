@@ -12,11 +12,13 @@ the dashboard then opens in your browser with a demo capture loaded.
 
 | Folder / file | Contents |
 | --- | --- |
-| `docs/Project_Report.pdf` | Full project report (20 pages) |
+| `docs/Student_Project_Report.pdf` | Project report in the college format (24 pages) |
+| `docs/Project_Report.pdf` | Technical report (20 pages) |
 | `docs/screenshots/` | Screenshots of the running dashboard |
 | `nta/` | Core package: parser, statistics, detectors, monitor, capture, sample generator |
 | `streamlit_app.py`, `cli.py` | Dashboard and command-line tool |
 | `samples/` | Test captures: `normal.pcap`, `demo.pcap`, `advanced.pcap` |
+| `evaluate.py` | Accuracy, precision, recall, F1 and detection time against ground truth |
 | `tests/` | Automated tests (`python -m pytest`) |
 
 ## Setup
@@ -45,6 +47,7 @@ python cli.py capture -d 30 -f "tcp or udp" -o mine.pcap   # capture live, save,
 python cli.py monitor                       # real-time: print alerts the moment they appear
 python cli.py monitor --replay samples/demo.pcap --speed 5  # same, fed from a file
 
+python evaluate.py                          # accuracy / precision / recall / F1 / detection time
 python -m pytest                            # run the tests
 ```
 

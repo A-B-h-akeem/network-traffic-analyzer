@@ -57,6 +57,21 @@ def test_demo_attacks_do_not_trigger_the_new_rules(frames):
     assert not {"Brute-force login", "DNS tunnelling"} & kinds(frames["demo"])
 
 
+@pytest.mark.parametrize("scenario", samplegen.SCENARIOS)
+def test_every_injected_event_has_an_overlapping_alert(frames, scenario):
+    df = frames[scenario]
+    origin = df["time"].min()
+    alerts = detectors.run_all(df)
+    for ev in samplegen.ground_truth(scenario):
+        assert any(a.kind == ev.kind and a.first_seen + origin <= ev.end
+                   and ev.start <= a.last_seen + origin for a in alerts), ev
+
+
+def test_arp_alert_starts_when_the_second_mac_appears(frames):
+    arp = next(a for a in detectors.run_all(frames["demo"]) if a.kind == "ARP spoofing")
+    assert 17 < arp.first_seen < 19  # spoofing starts at 18 s, not at the first reply
+
+
 def test_raising_link_capacity_clears_saturation(frames):
     th = detectors.Thresholds(link_capacity_mbps=100)
     assert "Link saturation" not in kinds(frames["demo"], th)

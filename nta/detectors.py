@@ -151,9 +151,12 @@ def detect_arp_spoofing(df: pd.DataFrame, th: Thresholds) -> list[Alert]:
         if len(counts) < 2:
             continue
         macs = ", ".join(f"{mac} ({n} replies)" for mac, n in counts.items())
+        # The conflict starts when the second MAC first claims the IP; replies
+        # before that came from a single owner and were legitimate.
+        conflict_start = g.groupby("arp_hwsrc")["t"].min().sort_values().iloc[1]
         alerts.append(Alert(
             "Attack", "ARP spoofing", "High", _hosts(g["arp_hwsrc"]), ip,
-            g["t"].min(), g["t"].max(),
+            float(conflict_start), g["t"].max(),
             f"{ip} claimed by {len(counts)} MAC addresses: {macs}. "
             f"Traffic for {ip} may be intercepted.",
         ))
