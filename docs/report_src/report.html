@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Network Traffic Analysis - Project Report</title>
+<style>
+  @page { size: A4; margin: 24mm 24mm 22mm 26mm; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body { font-family: "Times New Roman", Times, serif; font-size: 12pt; line-height: 1.4;
+         color: #000; text-align: justify; hyphens: auto; }
+  h1.chapter { font-size: 15pt; font-weight: bold; margin: 0 0 12pt; break-before: page; text-align: left; }
+  h1.front { font-size: 15pt; font-weight: bold; margin: 0 0 12pt; text-align: left; }
+  h1.first { break-before: auto; }
+  h2 { font-size: 12.5pt; font-weight: bold; margin: 16pt 0 6pt; text-align: left; break-after: avoid; }
+  p { margin: 0 0 9pt; }
+  ol, ul { margin: 0 0 9pt; padding-left: 22pt; }
+  li { margin-bottom: 4pt; }
+  code { font-family: "Courier New", monospace; font-size: 10.5pt; }
+  pre { font-family: "Courier New", monospace; font-size: 9.5pt; line-height: 1.2; border: 0.75pt solid #777;
+        padding: 6pt 8pt; white-space: pre-wrap; text-align: left; margin: 4pt 0 10pt; break-inside: avoid; }
+  table { width: 100%; border-collapse: collapse; font-size: 10.5pt; line-height: 1.3; margin: 2pt 0 12pt;
+          text-align: left; }
+  thead { display: table-header-group; }
+  tr { break-inside: avoid; }
+  th { font-weight: bold; border-top: 1.4pt solid #000; border-bottom: 0.8pt solid #000; padding: 4pt 6pt;
+       vertical-align: bottom; }
+  td { padding: 3.5pt 6pt; vertical-align: top; border-bottom: 0.4pt solid #bbb; }
+  tbody tr:last-child td { border-bottom: 1.4pt solid #000; }
+  tr.total td { font-weight: bold; }
+  td.num, th.num { text-align: right; white-space: nowrap; }
+  .tcap { font-size: 11pt; font-weight: bold; margin: 12pt 0 4pt; text-align: left; break-after: avoid; }
+  figure { margin: 10pt 0 14pt; break-inside: avoid; text-align: center; }
+  figure img { width: 100%; border: 0.75pt solid #999; }
+  figure svg { width: 100%; height: auto; }
+  figcaption { font-size: 11pt; font-weight: bold; margin-top: 5pt; text-align: center; }
+  .formula { text-align: center; margin: 4pt 0 10pt; font-style: italic; }
+  .toc { list-style: none; padding: 0; margin: 0; }
+  .toc li { display: flex; margin: 0 0 7pt; }
+  .toc .n { width: 28pt; }
+  .toc .t { flex: 1; overflow: hidden; white-space: nowrap; }
+  .toc .t::after { content: " ........................................................................................................................................"; }
+  .toc .p { width: 24pt; text-align: right; }
+  .toc li.sub { margin-left: 28pt; font-size: 11.5pt; }
+  .refs li { margin-bottom: 6pt; text-align: left; }
+  a { color: #000; text-decoration: none; }
+</style>
+</head>
+<body>
+
+<h1 class="front first">Abstract</h1>
+<p>This project develops a network traffic monitoring and analysis system that identifies network bottlenecks, abnormal traffic patterns and security threats, and explains each finding in plain language. The system captures packets from a live network interface or reads saved Wireshark/tcpdump captures, and extracts per-packet features such as source and destination IP address, protocol, ports, TCP flags, sequence numbers, packet size and timestamps.</p>
+<p>The extracted traffic is analysed for bandwidth utilisation, protocol distribution, top talkers and TCP retransmissions, and checked by nine detection rules. Three rules find bottlenecks (link saturation, a dominant talker, high retransmission rate); six find attacks (port scanning, SYN flooding, ICMP flooding, ARP spoofing, brute-force login and DNS tunnelling). Each rule is tied to an observable protocol behaviour, so every alert states the hosts, the time window and the numbers that triggered it. A Streamlit dashboard and a command-line tool display traffic statistics and alerts, and a real-time monitor re-analyses traffic every 2 seconds.</p>
+<p>The system was evaluated on three one-minute captures with known ground truth: clean traffic and seven injected events. It detected all seven events with no false alarms, reached a per-second accuracy of 0.999, precision of 0.992, recall of 1.000 and F1-score of 0.996, and reported each attack within 0.25 to 6 seconds of attack traffic. The solution improves network visibility, supports early threat detection and helps administrators maintain network performance and security.</p>
+<p><b>Keywords:</b> network traffic analysis, intrusion detection, packet capture, Scapy, port scan, SYN flood, ARP spoofing, DNS tunnelling, network monitoring.</p>
+
+<h1 class="chapter">Chapter Contents</h1>
+{{TOC}}
+
+<!-- ============================================================ -->
+<h1 class="chapter">1. Introduction</h1>
+<p>Computer networks carry every service an organisation depends on, so two questions matter constantly to a network administrator: is the network fast enough, and is anyone attacking it? A congested link slows every user behind it, and an attack such as a SYN flood or ARP spoofing can take a server offline or silently redirect traffic through an attacker's machine.</p>
+<p>Packet analysers such as Wireshark capture every frame on a link, but they leave interpretation to a human, who cannot read thousands of packets per second. Network traffic analysis closes that gap: it turns raw packets into measurements (throughput, protocol mix, who talks to whom) and into decisions (this host is scanning, this link is saturated).</p>
+<p>This project builds such a system for a small office LAN. It reads packets live or from capture files, measures the traffic, and applies nine detection rules, each based on a specific protocol behaviour: TCP's three-way handshake and retransmissions, ICMP echo requests, ARP's unauthenticated replies, and DNS query names. Results are shown in a web dashboard and a command-line tool, including a real-time monitor. Because real networks are rarely attacked on cue, the project also generates realistic test captures with known attacks, which makes the evaluation repeatable and gives exact ground truth.</p>
+<p>The rest of this report reviews related work (Chapter 2), defines the problem and objectives (Chapter 3), compares existing systems with the proposed one (Chapter 4), presents the architecture (Chapter 5) and detection methods (Chapter 6), describes the implementation (Chapter 7), and reports results and performance (Chapters 8 and 9). Chapter 10 concludes and outlines future work.</p>
+
+<!-- ============================================================ -->
+<h1 class="chapter">2. Literature Review</h1>
+<p>Network traffic analysis has developed along two lines: rule-based (signature) systems that match known patterns, and anomaly-based systems that learn what normal traffic looks like and flag deviations. This project sits in the first line but borrows the idea of measured thresholds from the second.</p>
+<h2>2.1 Signature-Based Intrusion Detection</h2>
+<p>Roesch introduced Snort as a lightweight, libpcap-based network intrusion detection system for small TCP/IP networks, built from a packet decoder, a rule-driven detection engine and an alerting subsystem [1]. Paxson's Bro (now Zeek) separates an event engine, which turns packets into higher-level events, from a policy script interpreter that decides what is suspicious, and is designed for real-time monitoring of a network link [2]. Both remain widely used; their main costs are rule maintenance and a steep learning curve for small sites.</p>
+<h2>2.2 Flow-Based Monitoring</h2>
+<p>Instead of inspecting every packet, routers can export flow records summarising each conversation, as standardised in NetFlow version 9 [3]. Flow records scale to large networks and are well suited to bandwidth accounting and top-talker reports, but they discard per-packet detail such as TCP flags and ARP contents, which are needed to recognise SYN floods or ARP spoofing.</p>
+<h2>2.3 Datasets and Machine Learning</h2>
+<p>Public labelled datasets support research on learned detectors. CIC-IDS2017 contains realistic benign traffic and eleven attack scenarios [4]; UNSW-NB15 combines modern normal and attack behaviour across nine attack categories and 49 features [5]. Classifiers such as Random Forest and unsupervised methods such as Isolation Forest [6] are common choices. Sommer and Paxson, however, argue that machine learning is rarely used in operational intrusion detection because attacks are rare, normal traffic is highly variable, errors are expensive and model decisions are hard to explain to operators [7].</p>
+<h2>2.4 Protocol-Level Attack Behaviour</h2>
+<p>Several of the attacks studied here are defined by protocol specifications. SYN flooding exploits the state a server keeps for half-open TCP connections [8]; ARP accepts replies without authentication, which enables spoofing [9]; ICMP echo requests are the basis of ping floods [10]; and TCP's retransmission of unacknowledged segments with the same sequence number makes packet loss directly observable [11].</p>
+<p class="tcap">Table 2.1: Comparison of traffic analysis approaches</p>
+<table>
+<thead><tr><th style="width:20%">Approach</th><th style="width:22%">Example</th><th style="width:29%">Strengths</th><th style="width:29%">Limitations</th></tr></thead>
+<tbody>
+<tr><td>Signature / rule-based IDS</td><td>Snort [1], Zeek [2]</td><td>Mature, real-time, explainable alerts</td><td>Large rule sets to maintain; complex for small sites</td></tr>
+<tr><td>Flow-based monitoring</td><td>NetFlow v9 [3]</td><td>Scales to large networks; good for bandwidth reports</td><td>Loses packet detail needed for SYN-flood or ARP checks</td></tr>
+<tr><td>Machine-learning anomaly detection</td><td>Classifiers on CIC-IDS2017 [4] or UNSW-NB15 [5]; Isolation Forest [6]</td><td>Can find unseen attack types</td><td>Needs labelled data; false alarms and opaque decisions in practice [7]</td></tr>
+<tr><td>This project</td><td>Nine protocol-based rules with measured thresholds</td><td>Explainable alerts with evidence; one tool for bottlenecks and attacks; runs on a laptop</td><td>Fixed thresholds; header inspection only</td></tr>
+</tbody>
+</table>
+<p>The gap this project addresses is a single, lightweight tool that covers both performance problems and attacks for a small LAN, explains every alert in plain language, and can be evaluated against exact ground truth.</p>
+
+<!-- ============================================================ -->
+<h1 class="chapter">3. Problem Definition and Objectives</h1>
+<h2>3.1 Problem Statement</h2>
+<p>Traditional network monitoring relies on manual inspection of packet captures or on large rule sets that are hard to maintain, which makes it difficult to notice performance bottlenecks and attacks while they are happening. Small networks in particular lack an affordable tool that continuously monitors traffic, recognises abnormal patterns, identifies likely security threats and explains each finding clearly enough for an administrator to act on it. There is a need for an automated system that does this on ordinary hardware and whose detection accuracy can be measured.</p>
+<h2>3.2 Objectives</h2>
+<ol>
+<li>Monitor network traffic continuously, from a live interface or from saved capture files.</li>
+<li>Capture and analyse network packets, extracting addresses, protocols, ports, TCP flags, sequence numbers, sizes and timing.</li>
+<li>Identify network bottlenecks: link saturation, hosts that dominate bandwidth, and TCP retransmissions caused by packet loss.</li>
+<li>Detect potential cyberattacks: port scanning, SYN flooding, ICMP flooding, ARP spoofing, brute-force logins and DNS tunnelling.</li>
+<li>Visualise network traffic statistics through an interactive dashboard.</li>
+<li>Generate alerts and downloadable reports for suspicious activity (CSV and JSON).</li>
+<li>Evaluate detection accuracy and detection time against known ground truth.</li>
+</ol>
+<h2>3.3 Scope</h2>
+<p>The system targets Ethernet LANs carrying IPv4 or IPv6 traffic and inspects packet headers (Ethernet, ARP, IP, TCP, UDP, ICMP, DNS). It does not decrypt or inspect encrypted payloads such as HTTPS content. Detection uses explainable rules with thresholds the administrator can adjust; machine-learning classification is discussed as future scope.</p>
+
+<!-- ============================================================ -->
+<h1 class="chapter">4. Existing and Proposed Systems</h1>
+<h2>4.1 Existing Systems</h2>
+<ul>
+<li><b>Packet analysers (Wireshark, tcpdump):</b> capture and decode every packet, but a person must find problems by hand.</li>
+<li><b>Signature-based IDS (Snort, Zeek):</b> detect known attacks in real time, but need large rule sets and specialist configuration, and focus on security rather than performance.</li>
+<li><b>Flow monitors (NetFlow collectors):</b> report bandwidth and top talkers at scale, but lose per-packet detail needed to recognise SYN floods or ARP spoofing.</li>
+<li><b>Machine-learning detectors:</b> can generalise to new attacks, but need labelled training data and produce decisions that are hard to explain.</li>
+</ul>
+<h2>4.2 Proposed System</h2>
+<p>The proposed system combines packet-level analysis, traffic statistics and nine explainable detection rules in one lightweight Python tool. Every alert carries its evidence (hosts, time window and the numbers that crossed a threshold), so an administrator can verify it immediately. A real-time monitor and a dashboard make results visible as they happen, and a built-in generator of labelled test traffic allows accuracy to be measured.</p>
+<p class="tcap">Table 4.1: Existing systems compared with the proposed system</p>
+<table>
+<thead><tr><th style="width:28%">Feature</th><th>Packet analyser</th><th>Signature IDS</th><th>Flow monitor</th><th>Proposed system</th></tr></thead>
+<tbody>
+<tr><td>Automatic attack detection</td><td>No</td><td>Yes</td><td>Limited</td><td>Yes (6 attack types)</td></tr>
+<tr><td>Bottleneck detection</td><td>No</td><td>No</td><td>Partly (bandwidth)</td><td>Yes (3 bottleneck types)</td></tr>
+<tr><td>Explains each alert with evidence</td><td>No</td><td>Rule message only</td><td>No</td><td>Yes</td></tr>
+<tr><td>Real-time monitoring</td><td>Capture only</td><td>Yes</td><td>Near real time</td><td>Yes (2 s refresh)</td></tr>
+<tr><td>Dashboard and charts</td><td>Basic</td><td>Add-ons</td><td>Yes</td><td>Yes</td></tr>
+<tr><td>Setup effort for a small LAN</td><td>Low</td><td>High</td><td>Medium</td><td>Low (one script)</td></tr>
+<tr><td>Built-in accuracy evaluation</td><td>No</td><td>No</td><td>No</td><td>Yes</td></tr>
+</tbody>
+</table>
+
+<!-- ============================================================ -->
+<h1 class="chapter">5. System Architecture and Design</h1>
+<p>The system is a pipeline: every traffic source is converted into the same packet table, which two analysis stages then read. Because live traffic, saved files and test captures share one path, they are analysed identically.</p>
+<figure>
+{{ARCH_SVG}}
+<figcaption>Figure 5.1: Proposed system architecture</figcaption>
+</figure>
+<p>The real-time monitor sits between a source and the parser only in live mode; a saved file is parsed in one pass. The detection stage is highlighted because it is the core of the project.</p>
+<h2>5.1 Modules</h2>
+<p class="tcap">Table 5.1: System modules</p>
+<table>
+<thead><tr><th style="width:20%">Module</th><th style="width:55%">Description</th><th style="width:25%">Source file</th></tr></thead>
+<tbody>
+<tr><td>Packet Capture</td><td>Captures packets from a network interface with Scapy (Npcap or libpcap) for a fixed time or continuously.</td><td><code>nta/capture.py</code>, <code>nta/monitor.py</code></td></tr>
+<tr><td>Data Preprocessing</td><td>Reads pcap/pcapng files, decodes each frame and orders packets by timestamp; in live mode, malformed packets are skipped.</td><td><code>nta/parser.py</code></td></tr>
+<tr><td>Feature Extraction</td><td>Extracts time, length, MAC and IP addresses, protocol, ports, service, TCP flags, sequence number, payload length, ICMP type, ARP fields and DNS query name.</td><td><code>nta/parser.py</code></td></tr>
+<tr><td>Traffic Analysis</td><td>Computes bandwidth utilisation per second, protocol and service mix, top talkers, conversations and TCP retransmissions.</td><td><code>nta/analysis.py</code></td></tr>
+<tr><td>Attack Detection</td><td>Applies nine rules for bottlenecks and attacks and produces alerts with severity and evidence.</td><td><code>nta/detectors.py</code></td></tr>
+<tr><td>Visualisation</td><td>Interactive dashboard with KPI cards, alert list, charts and a packet explorer; real-time view.</td><td><code>streamlit_app.py</code></td></tr>
+<tr><td>Report Generation</td><td>Text reports, CSV alert export and JSON summary from the command line.</td><td><code>cli.py</code></td></tr>
+<tr><td>Test Data Generation</td><td>Builds labelled one-minute captures (normal, demo, advanced) with known injected events.</td><td><code>nta/samplegen.py</code></td></tr>
+<tr><td>Evaluation</td><td>Scores detections against ground truth: accuracy, precision, recall, F1 and detection delay.</td><td><code>evaluate.py</code></td></tr>
+</tbody>
+</table>
+<h2>5.2 Data Design</h2>
+<p>Each packet becomes one row of a pandas DataFrame with 18 columns: time, t (seconds since capture start), length, source and destination MAC, source and destination IP, protocol, service, source and destination port, TCP flags, sequence number, payload length, ICMP type, ARP operation, ARP sender MAC and DNS query name. Each alert records its category (Attack or Bottleneck), kind, severity (High, Medium or Low), source, target, first and last time seen, and a plain-language explanation.</p>
+
+<!-- ============================================================ -->
+<h1 class="chapter">6. Methodology and Algorithms</h1>
+<p>Detection is rule-based: each of the nine detectors measures one protocol behaviour and raises an alert when it crosses a threshold. Thresholds are defaults for a small LAN on a 10 Mbit/s link and can be changed in the dashboard.</p>
+<h2>6.1 Bottleneck Detection</h2>
+<p class="tcap">Table 6.1: Bottleneck detection rules</p>
+<table>
+<thead><tr><th style="width:15%">Rule</th><th style="width:37%">Algorithm</th><th style="width:22%">Default threshold</th><th style="width:26%">Rationale</th></tr></thead>
+<tbody>
+<tr><td>Link saturation</td><td>Group packets into 1-second bins, convert bytes to Mbit/s, merge consecutive busy seconds into one episode and name the flow with the most bytes in it.</td><td>A second above 80% of link capacity (10 Mbit/s)</td><td>Queues and latency grow before a link reaches 100%.</td></tr>
+<tr><td>Dominant talker</td><td>Sum bytes sent per host and compute each host's share.</td><td>One host sends 50% or more of all bytes (once 1 MB is captured)</td><td>One host can starve the others on a shared link.</td></tr>
+<tr><td>Retrans&shy;missions</td><td>Mark a TCP data segment as retransmitted when the same (source, destination, ports, sequence number) was already seen.</td><td>3% or more of segments, overall or in one flow of 100+ segments</td><td>TCP resends lost segments; loss on a busy path means congestion [11].</td></tr>
+</tbody>
+</table>
+<h2>6.2 Attack Detection</h2>
+<p class="tcap">Table 6.2: Attack detection rules</p>
+<table>
+<thead><tr><th style="width:15%">Rule</th><th style="width:37%">Algorithm</th><th style="width:22%">Default threshold</th><th style="width:26%">Rationale</th></tr></thead>
+<tbody>
+<tr><td>Port scan</td><td>Count distinct destination ports in SYN-only packets per (source, target) pair; list ports that answered SYN-ACK as open.</td><td>20 or more ports on one host</td><td>Clients use one or two service ports; scanners probe many.</td></tr>
+<tr><td>SYN flood</td><td>Count SYN-only packets per second per (target, port); keep only the burst seconds; measure the share answered with SYN-ACK.</td><td>100 or more SYNs per second</td><td>Half-open connections exhaust the server's backlog [8].</td></tr>
+<tr><td>ICMP flood</td><td>Count ICMP echo requests (type 8) per second per target.</td><td>50 or more per second</td><td>Normal ping sends one request per second [10].</td></tr>
+<tr><td>ARP spoofing</td><td>Group ARP replies (op 2) by sender IP and count distinct sender MACs; the alert starts when the second MAC first appears.</td><td>2 or more MACs for one IP</td><td>ARP replies are unauthenticated, so any host can claim the gateway [9].</td></tr>
+<tr><td>Brute-force login</td><td>Count SYN-only packets per (source, target, port) for login services: FTP, SSH, Telnet, POP3, IMAP, MySQL, RDP, VNC.</td><td>20 or more connection attempts</td><td>A person logs in once; a password-guessing tool reconnects every few guesses.</td></tr>
+<tr><td>DNS tunnelling</td><td>Group DNS queries by (client, base domain) and count unique names and their average length.</td><td>30 or more unique names averaging 40+ characters</td><td>Normal lookups reuse a few short, cached names; tunnels encode data in long one-off names.</td></tr>
+</tbody>
+</table>
+<h2>6.3 Example Algorithm: SYN Flood Detection</h2>
+<pre>Input: packet table P, threshold R (SYNs per second)
+S &lt;- packets in P with protocol TCP and flags exactly SYN
+for each (target, port) in S:
+    count SYNs per 1-second bin
+    burst &lt;- bins with count &gt;= R
+    if burst is not empty:
+        G &lt;- SYNs of (target, port) inside the burst bins
+        answered &lt;- SYN-ACKs sent by target from port during G
+        raise alert(High, sources of G, target:port,
+                    |G| SYNs, peak rate, |answered| / |G|)</pre>
+<p>The other rules follow the same pattern: filter the relevant packets, aggregate them with pandas group-by operations, compare against the threshold, and only then examine the few suspicious groups in detail.</p>
+<h2>6.4 Real-Time Monitoring</h2>
+<p>A background thread collects packets into a rolling buffer of the newest 200,000 packets, from a network card or a capture replayed at 1x to 10x speed. Every 2 seconds the dashboard converts only the new packets into rows and re-runs all nine detectors, so an attack appears within one refresh of crossing its threshold.</p>
+<h2>6.5 Ground Truth and Evaluation Method</h2>
+<p>The sample generator records the exact start and end time of every injected event. An event counts as detected when an alert of the same kind overlaps its window. For the per-second evaluation, each second of each capture is labelled positive or negative per event type, from both the ground truth and the alerts, giving a confusion matrix (TP, FP, FN, TN) and these metrics:</p>
+<p class="formula">Accuracy = (TP + TN) / (TP + TN + FP + FN) &nbsp;&nbsp;&nbsp; Precision = TP / (TP + FP)</p>
+<p class="formula">Recall = TP / (TP + FN) &nbsp;&nbsp;&nbsp; F1 = 2 &times; Precision &times; Recall / (Precision + Recall)</p>
+
+<!-- ============================================================ -->
+<h1 class="chapter">7. Implementation</h1>
+<p>The system is written in about 1,900 lines of Python, with a further 130 lines of automated tests, and runs on an ordinary Windows, Linux or macOS laptop.</p>
+<h2>7.1 Technologies and Tools Used</h2>
+<p class="tcap">Table 7.1: Technologies and tools</p>
+<table>
+<thead><tr><th style="width:24%">Category</th><th>Tools used</th></tr></thead>
+<tbody>
+<tr><td>Programming</td><td>Python 3.11</td></tr>
+<tr><td>Packet capture</td><td>Scapy 2.8 (live capture and decoding), Npcap or libpcap driver; Wireshark-compatible pcap/pcapng files</td></tr>
+<tr><td>Data analysis</td><td>pandas 3.1, NumPy</td></tr>
+<tr><td>Detection</td><td>Nine rule-based detectors with adjustable thresholds (no training data required)</td></tr>
+<tr><td>Visualisation</td><td>Streamlit 1.67 dashboard with Apache ECharts charts</td></tr>
+<tr><td>Testing</td><td>pytest (14 automated tests)</td></tr>
+<tr><td>Dataset</td><td>Three generated, labelled captures: normal, demo (5 events) and advanced (2 events)</td></tr>
+<tr><td>Version control</td><td>Git and GitHub</td></tr>
+</tbody>
+</table>
+<h2>7.2 Implementation Phases</h2>
+<ol>
+<li><b>Network data collection.</b> Packets are captured live with Scapy (the command-line capture command, or the dashboard's Live mode) or loaded from Wireshark/tcpdump files. Because real attacks cannot be staged on demand, the sample generator builds realistic one-minute captures of a small office LAN (gateway 192.168.1.1, web server 192.168.1.20, five clients) containing complete TCP sessions, DNS lookups and routine ARP, plus injected attacks.</li>
+<li><b>Data preprocessing.</b> Frames are decoded layer by layer, timestamps are normalised to seconds since the capture started, and packets are ordered in time. Missing fields (for example, ports on ARP packets) are stored as nulls so every packet fits one table.</li>
+<li><b>Feature extraction.</b> For each packet the parser records addresses, protocol, ports, TCP flags and sequence number, payload length, ICMP type, ARP operation and sender MAC, and DNS query name, and infers the application service from well-known ports.</li>
+<li><b>Traffic analysis.</b> The analysis module computes throughput per second, protocol and service distribution, top talkers, top conversations and TCP retransmissions.</li>
+<li><b>Attack and bottleneck detection.</b> The nine detectors produce alerts with severity, hosts, time window and evidence. A real-time monitor re-runs them every 2 seconds on live or replayed traffic.</li>
+<li><b>Dashboard and reporting.</b> The Streamlit dashboard shows KPI cards, alerts, a throughput timeline with the link capacity, traffic by service, top talkers, conversations and a filterable packet explorer. The command-line tool prints text reports and exports CSV and JSON.</li>
+<li><b>Testing and evaluation.</b> Fourteen pytest tests check every detector against the injected events, the absence of false alarms on clean traffic, the monitor and the command-line tool. The evaluation script computes the metrics reported in Chapter 9.</li>
+</ol>
+<h2>7.3 Running the System</h2>
+<pre>pip install -r requirements.txt
+streamlit run streamlit_app.py                       # dashboard
+python cli.py analyze samples/demo.pcap              # text report
+python cli.py monitor --replay samples/demo.pcap --speed 5
+python evaluate.py                                   # metrics
+python -m pytest                                     # tests</pre>
+<p>On Windows, double-clicking <code>run_dashboard.bat</code> sets up the environment on first run and opens the dashboard. Live capture additionally needs Npcap and administrator rights.</p>
+
+<!-- ============================================================ -->
+<h1 class="chapter">8. Results and Discussion</h1>
+<p>The system was run on three one-minute captures of a simulated office LAN. All numbers in this chapter come from the system's own output.</p>
+<h2>8.1 Packets Captured</h2>
+<p class="tcap">Table 8.1: Test captures and summary statistics</p>
+<table>
+<thead><tr><th style="width:15%">Capture</th><th style="width:27%">Contents</th><th class="num">Packets</th><th class="num">Data</th><th class="num">Duration</th><th class="num">Hosts</th><th class="num">Avg / peak (Mbit/s)</th></tr></thead>
+<tbody>
+<tr><td>normal.pcap</td><td>Browsing, DNS, routine ARP</td><td class="num">4,898</td><td class="num">4.31 MB</td><td class="num">56.0 s</td><td class="num">11</td><td class="num">0.62 / 2.19</td></tr>
+<tr><td>demo.pcap</td><td>Baseline + port scan, ARP spoofing, congested download, SYN flood, ICMP flood</td><td class="num">18,070</td><td class="num">14.23 MB</td><td class="num">57.8 s</td><td class="num">2,514</td><td class="num">1.97 / 14.38</td></tr>
+<tr><td>advanced.pcap</td><td>Baseline + SSH brute force, DNS tunnelling</td><td class="num">6,138</td><td class="num">4.44 MB</td><td class="num">56.0 s</td><td class="num">14</td><td class="num">0.63 / 2.23</td></tr>
+</tbody>
+</table>
+<p>The large host count in demo.pcap comes from the SYN flood, whose 2,500 packets each carry a different spoofed source address.</p>
+<h2>8.2 Traffic Distribution by Protocol</h2>
+<p class="tcap">Table 8.2: Protocol distribution in demo.pcap</p>
+<table>
+<thead><tr><th>Protocol</th><th class="num">Packets</th><th class="num">Data</th><th class="num">Share of bytes</th></tr></thead>
+<tbody>
+<tr><td>TCP</td><td class="num">17,191</td><td class="num">13.58 MB</td><td class="num">95.5%</td></tr>
+<tr><td>ICMP</td><td class="num">600</td><td class="num">0.63 MB</td><td class="num">4.4%</td></tr>
+<tr><td>UDP (DNS)</td><td class="num">162</td><td class="num">0.02 MB</td><td class="num">0.1%</td></tr>
+<tr><td>ARP</td><td class="num">117</td><td class="num">&lt; 0.01 MB</td><td class="num">&lt; 0.1%</td></tr>
+</tbody>
+</table>
+<p>TCP dominates because of HTTPS browsing and one large download; ICMP is visible only because of the ping flood.</p>
+<h2>8.3 Bandwidth Utilisation Over Time</h2>
+<figure>
+{{BANDWIDTH_SVG}}
+<figcaption>Figure 8.1: Bandwidth utilisation per second in demo.pcap, with attack periods shaded</figcaption>
+</figure>
+<p>The congested download from 151.101.1.69 to 192.168.1.12 pushed the 10 Mbit/s link above capacity for six seconds, peaking at 14.4 Mbit/s, and the system raised a link-saturation alert naming that flow as responsible for 92% of the traffic. The port scan, SYN flood and ICMP flood each stayed under 3.2 Mbit/s. A bandwidth alarm alone would therefore miss all three attacks, which is why the attack detectors examine protocol behaviour instead.</p>
+<h2>8.4 Identification of Suspicious Traffic and Detected Attacks</h2>
+<p class="tcap">Table 8.3: Injected events and the alerts raised</p>
+<table>
+<thead><tr><th style="width:30%">Injected event (start time)</th><th style="width:22%">Alert raised</th><th style="width:48%">Evidence reported by the system</th></tr></thead>
+<tbody>
+<tr><td>SYN scan of ports 1 to 500 on .20 by .66 (9.8 s)</td><td>Port scan, High</td><td>"SYN probes to 500 distinct ports in 2.5s. Open ports revealed: 22, 80, 443."</td></tr>
+<tr><td>.66 claims the gateway's IP every 2 s (17.8 s)</td><td>ARP spoofing, High</td><td>"192.168.1.1 claimed by 2 MAC addresses: de:ad:be:ef:00:66 (105 replies), 00:11:22:33:44:01 (6 replies)."</td></tr>
+<tr><td>11 Mbit/s download over a 10 Mbit/s link with 6% loss (25.8 s)</td><td>Link saturation, High; Dominant talker, Medium; High retransmission rate, Medium; Lossy TCP flow, Low</td><td>"6s above 80% of the 10 Mbit/s link (peak 14.4 Mbit/s)." Retransmissions 3.5% overall, 5.1% on that flow.</td></tr>
+<tr><td>2,500 spoofed SYNs to .20:80 in 4 s (39.8 s)</td><td>SYN flood, High</td><td>"2,500 SYNs from 2,500 sources, peak 625/s; only 10% answered with SYN-ACK."</td></tr>
+<tr><td>400 large pings from .77 to .20 in 2 s (49.8 s)</td><td>ICMP flood, Medium</td><td>"400 echo requests (0.42 MB), peak 200/s."</td></tr>
+<tr><td>120 SSH login attempts on .20:22 from 203.0.113.50 (7.8 s)</td><td>Brute-force login, High</td><td>"120 SSH connection attempts in 30s (242 per minute), typical of password guessing."</td></tr>
+<tr><td>200 encoded queries under tunnel.example from .77 (14.8 s)</td><td>DNS tunnelling, High</td><td>"200 unique names under tunnel.example, average 72 characters (about 11.4 KB of encoded data)."</td></tr>
+<tr><td>None (normal.pcap)</td><td>No alerts</td><td>All measurements below thresholds; retransmissions 0.3%.</td></tr>
+</tbody>
+</table>
+<p>Every injected event produced the expected alert with the correct source and target, and no alert appeared without an injected cause. The three extra bottleneck alerts in demo.pcap are genuine consequences of the congested download rather than false alarms.</p>
+<h2>8.5 Output Screenshots</h2>
+<p>The following screenshots were taken from the running dashboard on 13 November 2026.</p>
+<figure><img src="../screenshots/01_dashboard_overview.png" alt="Dashboard overview">
+<figcaption>Figure 8.2: Dashboard overview on demo.pcap: summary cards above the alert list</figcaption></figure>
+<figure><img src="../screenshots/03_alerts_demo.png" alt="Alert list on demo.pcap">
+<figcaption>Figure 8.3: Alert list on demo.pcap with severity, hosts, time window and evidence</figcaption></figure>
+<figure><img src="../screenshots/09_alerts_advanced.png" alt="Alerts on advanced.pcap">
+<figcaption>Figure 8.4: Brute-force login and DNS tunnelling alerts on advanced.pcap</figcaption></figure>
+<figure><img src="../screenshots/10_live_monitor.png" alt="Live monitor">
+<figcaption>Figure 8.5: Live monitor 8 seconds into a 5x replay of demo.pcap</figcaption></figure>
+<figure><img src="../screenshots/07_packet_explorer.png" alt="Packet explorer">
+<figcaption>Figure 8.6: Packet explorer with protocol and host filters</figcaption></figure>
+
+<!-- ============================================================ -->
+<h1 class="chapter">9. Performance Evaluation</h1>
+<p>Performance was measured with the evaluation script against exact ground truth recorded by the sample generator, across all three captures (172 seconds of traffic, seven injected events).</p>
+<h2>9.1 Detection Performance</h2>
+<p class="tcap">Table 9.1: Performance metrics</p>
+<table>
+<thead><tr><th style="width:17%">Metric</th><th style="width:36%">Purpose</th><th>Result</th></tr></thead>
+<tbody>
+<tr><td>Accuracy</td><td>Overall classification correctness</td><td>0.999 (1,203 of 1,204 per-second labels correct)</td></tr>
+<tr><td>Precision</td><td>Correctness of attack predictions</td><td>0.992 (132 of 133 positive labels correct)</td></tr>
+<tr><td>Recall</td><td>Ability to identify actual attacks</td><td>1.000 (no attack second missed)</td></tr>
+<tr><td>F1-score</td><td>Balance between precision and recall</td><td>0.996</td></tr>
+<tr><td>Detection time</td><td>Time required to identify suspicious traffic</td><td>0.25 to 6.0 s of attack traffic (mean 1.86 s); 0.6 to 2.6 s end to end in the live monitor</td></tr>
+</tbody>
+</table>
+<p>At the event level, all 7 injected events were detected and there were 0 false alarms; the clean capture produced no alerts at all.</p>
+<h2>9.2 Results per Event Type</h2>
+<p class="tcap">Table 9.2: Per-second confusion matrix and metrics by event type</p>
+<table>
+<thead><tr><th>Event type</th><th class="num">TP</th><th class="num">FP</th><th class="num">FN</th><th class="num">TN</th><th class="num">Precision</th><th class="num">Recall</th><th class="num">F1</th></tr></thead>
+<tbody>
+<tr><td>Port scan</td><td class="num">4</td><td class="num">0</td><td class="num">0</td><td class="num">168</td><td class="num">1.000</td><td class="num">1.000</td><td class="num">1.000</td></tr>
+<tr><td>SYN flood</td><td class="num">5</td><td class="num">0</td><td class="num">0</td><td class="num">167</td><td class="num">1.000</td><td class="num">1.000</td><td class="num">1.000</td></tr>
+<tr><td>ICMP flood</td><td class="num">3</td><td class="num">0</td><td class="num">0</td><td class="num">169</td><td class="num">1.000</td><td class="num">1.000</td><td class="num">1.000</td></tr>
+<tr><td>ARP spoofing</td><td class="num">41</td><td class="num">0</td><td class="num">0</td><td class="num">131</td><td class="num">1.000</td><td class="num">1.000</td><td class="num">1.000</td></tr>
+<tr><td>Brute-force login</td><td class="num">31</td><td class="num">0</td><td class="num">0</td><td class="num">141</td><td class="num">1.000</td><td class="num">1.000</td><td class="num">1.000</td></tr>
+<tr><td>DNS tunnelling</td><td class="num">41</td><td class="num">0</td><td class="num">0</td><td class="num">131</td><td class="num">1.000</td><td class="num">1.000</td><td class="num">1.000</td></tr>
+<tr><td>Link saturation</td><td class="num">7</td><td class="num">1</td><td class="num">0</td><td class="num">164</td><td class="num">0.875</td><td class="num">1.000</td><td class="num">0.933</td></tr>
+<tr class="total"><td>All types</td><td class="num">132</td><td class="num">1</td><td class="num">0</td><td class="num">1,071</td><td class="num">0.992</td><td class="num">1.000</td><td class="num">0.996</td></tr>
+</tbody>
+</table>
+<p>The single false positive is a boundary effect: the saturation alert covers whole one-second bins and ends at 32.0 s, while the download's last packet is at 31.9 s, so the alert spills into one extra second.</p>
+<h2>9.3 Detection Time</h2>
+<figure>
+{{DELAY_SVG}}
+<figcaption>Figure 9.1: Attack traffic needed before each alert (capture re-analysed every 0.25 s)</figcaption>
+</figure>
+<p>Volume attacks are caught almost immediately because a single second of traffic exceeds their rate thresholds. Brute-force login and DNS tunnelling take longer by design: their rules wait for 20 login attempts or 30 unique names, which these attacks reach after about 5 and 6 seconds. Lowering those thresholds would shorten the delay at the cost of more false alarms on busy networks.</p>
+<p>In the real-time monitor, the end-to-end delay also includes the 2-second refresh. Replaying demo.pcap at real speed, alerts appeared 0.6 s (port scan), 1.0 s (ARP spoofing), 1.4 s (link saturation), 1.0 s (SYN flood) and 2.6 s (ICMP flood) after each attack began.</p>
+<h2>9.4 Processing Performance</h2>
+<p class="tcap">Table 9.3: Processing performance</p>
+<table>
+<thead><tr><th style="width:55%">Measurement</th><th>Result</th></tr></thead>
+<tbody>
+<tr><td>Packet decoding speed</td><td>About 3,900 packets per second</td></tr>
+<tr><td>All nine detectors on 18,070 packets</td><td>125 ms (781 ms before vectorised filtering)</td></tr>
+<tr><td>Live dashboard refresh during a 5x replay</td><td>Under 0.2 s</td></tr>
+<tr><td>Memory bound in live mode</td><td>Newest 200,000 packets</td></tr>
+</tbody>
+</table>
+<h2>9.5 Discussion</h2>
+<p>The near-perfect scores show that each rule recognises the behaviour it was designed for, but they should be read with care: the test captures were generated for this project and the thresholds were chosen with them in mind, so real networks will produce more borderline cases. The system also does not use a trained classifier, so the metrics measure rule accuracy rather than machine-learning generalisation. Evaluation on a public labelled dataset such as CIC-IDS2017 [4] is the natural next step.</p>
+
+<!-- ============================================================ -->
+<h1 class="chapter">10. Conclusion and Future Scope</h1>
+<h2>10.1 Conclusion</h2>
+<p>The Network Traffic Analysis project delivers a working system that monitors network performance and identifies security threats on a small LAN. By combining packet capture, feature extraction, traffic analytics and nine protocol-based detection rules, it detects link saturation, bandwidth hogs and packet loss as well as port scans, SYN and ICMP floods, ARP spoofing, brute-force logins and DNS tunnelling, and explains each alert with the hosts, time window and numbers behind it. On labelled test traffic it detected all seven injected events with no false alarms (per-second F1-score 0.996), and its real-time monitor reported each attack within 2.6 seconds. The project provided practical experience with packet-level networking (TCP handshakes and retransmission, ARP, ICMP and DNS), network security, data analysis and dashboard development.</p>
+<h2>10.2 Future Scope</h2>
+<ol>
+<li><b>Machine-learning detection:</b> train classifiers such as Random Forest, or unsupervised models such as Isolation Forest [6], on per-second and per-flow features to complement the rules and find attack types they do not cover.</li>
+<li><b>Public-dataset evaluation:</b> measure accuracy on labelled datasets such as CIC-IDS2017 [4] and UNSW-NB15 [5] in addition to the generated captures.</li>
+<li><b>Adaptive thresholds:</b> learn each network's normal baseline instead of using fixed values.</li>
+<li><b>Long-term state in live mode:</b> keep per-host counters beyond the rolling buffer so slow scans and slow password guessing are caught.</li>
+<li><b>Faster decoding:</b> use a compiled decoder such as tshark for gigabit links.</li>
+<li><b>Alert delivery:</b> send alerts by email or chat and keep an alert history in a database.</li>
+</ol>
+
+<!-- ============================================================ -->
+<h1 class="chapter">References</h1>
+<ol class="refs">
+<li>M. Roesch, "Snort: Lightweight Intrusion Detection for Networks," in <i>Proc. 13th USENIX Conference on System Administration (LISA '99)</i>, Seattle, WA, 1999, pp. 229&ndash;238.</li>
+<li>V. Paxson, "Bro: A System for Detecting Network Intruders in Real-Time," <i>Computer Networks</i>, vol. 31, no. 23&ndash;24, pp. 2435&ndash;2463, 1999.</li>
+<li>B. Claise, Ed., "Cisco Systems NetFlow Services Export Version 9," RFC 3954, IETF, 2004.</li>
+<li>I. Sharafaldin, A. H. Lashkari and A. A. Ghorbani, "Toward Generating a New Intrusion Detection Dataset and Intrusion Traffic Characterization," in <i>Proc. 4th Int. Conf. on Information Systems Security and Privacy (ICISSP)</i>, 2018, pp. 108&ndash;116, doi: 10.5220/0006639801080116.</li>
+<li>N. Moustafa and J. Slay, "UNSW-NB15: A Comprehensive Data Set for Network Intrusion Detection Systems (UNSW-NB15 Network Data Set)," in <i>Proc. Military Communications and Information Systems Conference (MilCIS)</i>, IEEE, 2015.</li>
+<li>F. T. Liu, K. M. Ting and Z.-H. Zhou, "Isolation Forest," in <i>Proc. 8th IEEE Int. Conf. on Data Mining (ICDM)</i>, Pisa, Italy, 2008, pp. 413&ndash;422.</li>
+<li>R. Sommer and V. Paxson, "Outside the Closed World: On Using Machine Learning for Network Intrusion Detection," in <i>Proc. IEEE Symposium on Security and Privacy</i>, 2010, pp. 305&ndash;316.</li>
+<li>W. Eddy, "TCP SYN Flooding Attacks and Common Mitigations," RFC 4987, IETF, 2007.</li>
+<li>D. C. Plummer, "An Ethernet Address Resolution Protocol," RFC 826, IETF, 1982.</li>
+<li>J. Postel, "Internet Control Message Protocol," RFC 792, IETF, 1981.</li>
+<li>W. Eddy, Ed., "Transmission Control Protocol (TCP)," RFC 9293, IETF, 2022.</li>
+<li>Wireshark Foundation, <i>Wireshark User's Guide</i>, https://www.wireshark.org/docs/</li>
+<li>Scapy community, <i>Scapy Documentation</i>, https://scapy.readthedocs.io</li>
+<li>The pandas development team, <i>pandas Documentation</i>, https://pandas.pydata.org/docs/</li>
+<li>Snowflake Inc., <i>Streamlit Documentation</i>, https://docs.streamlit.io</li>
+</ol>
+
+<!-- ============================================================ -->
+<h1 class="chapter">Appendices</h1>
+<h2>Appendix A: Sample Command-Line Output</h2>
+<p>Output of <code>python cli.py analyze samples/advanced.pcap</code>:</p>
+<pre>=== Summary ===
+Packets: 6,138   Data: 4.44 MB   Duration: 56.0s   Hosts: 14
+Throughput: avg 0.63 Mbit/s, peak 2.23 Mbit/s (link capacity 10 Mbit/s)
+
+=== Protocols ===
+proto  packets   bytes share
+  TCP     5564 4.36 MB 98.1%
+  UDP      562 0.09 MB  1.9%
+  ARP       12 0.00 MB  0.0%
+
+=== Alerts (2) ===
+[High  ] Attack / Brute-force login  t=7.8-37.6s
+          203.0.113.50 -> 192.168.1.20:22
+          120 SSH connection attempts in 30s (242 per minute), typical of
+          password guessing.
+[High  ] Attack / DNS tunnelling  t=14.8-54.6s
+          192.168.1.77 -> tunnel.example
+          200 unique names under tunnel.example, average 72 characters
+          (about 11.4 KB of encoded data), typical of data exfiltration or
+          a covert channel over DNS.</pre>
+<h2 style="break-before: page">Appendix B: Project Files</h2>
+<p>The complete source code is available at https://github.com/A-B-h-akeem/network-traffic-analyzer.</p>
+<p class="tcap">Table B.1: Project files</p>
+<table>
+<thead><tr><th style="width:32%">Path</th><th>Contents</th></tr></thead>
+<tbody>
+<tr><td><code>nta/parser.py</code></td><td>Packet decoding and feature extraction</td></tr>
+<tr><td><code>nta/analysis.py</code></td><td>Traffic statistics</td></tr>
+<tr><td><code>nta/detectors.py</code></td><td>The nine detection rules and thresholds</td></tr>
+<tr><td><code>nta/monitor.py</code></td><td>Real-time monitor (live capture or paced replay)</td></tr>
+<tr><td><code>nta/capture.py</code></td><td>Interface listing and fixed-length capture</td></tr>
+<tr><td><code>nta/samplegen.py</code></td><td>Labelled test-capture generator with ground truth</td></tr>
+<tr><td><code>streamlit_app.py</code></td><td>Web dashboard</td></tr>
+<tr><td><code>cli.py</code></td><td>Command-line tool</td></tr>
+<tr><td><code>evaluate.py</code></td><td>Accuracy, precision, recall, F1 and detection-time evaluation</td></tr>
+<tr><td><code>tests/</code></td><td>14 automated tests</td></tr>
+<tr><td><code>samples/</code></td><td>normal.pcap, demo.pcap, advanced.pcap</td></tr>
+<tr><td><code>run_dashboard.bat</code></td><td>One-click launcher for Windows</td></tr>
+</tbody>
+</table>
+
+</body>
+</html>
